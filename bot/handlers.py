@@ -246,10 +246,20 @@ async def cmd_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if update.callback_query:
         await update.callback_query.answer()
         await _safe_edit(update.callback_query, scanning_text)
+        sent = None  # edits are done via callback_query
     else:
         sent = await update.message.reply_text(scanning_text, parse_mode="HTML")
 
-    results = await scan_and_redeem(wallet, dry_run=True)
+    try:
+        results = await scan_and_redeem(wallet, dry_run=True)
+    except Exception:
+        log.exception("cmd_redeem: scan_and_redeem raised unexpectedly")
+        error_text = "\u274c <b>Scan failed</b>\n\nCould not fetch positions. Please try again."
+        if update.callback_query:
+            await _safe_edit(update.callback_query, error_text, reply_markup=back_to_menu())
+        else:
+            await sent.edit_text(error_text, parse_mode="HTML", reply_markup=back_to_menu())
+        return
 
     # Store dry-run results in user_data for the confirm step
     context.user_data["redeem_preview"] = results
@@ -405,6 +415,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _handle_redeem_confirm(update, context)
 
     elif data == "redeem_cancel":
+        context.user_data.pop("redeem_preview", None)
         await query.answer("Cancelled.")
         await _safe_edit(
             query,
@@ -418,11 +429,27 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _handle_redeem_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Execute redemptions after user confirmed the dry-run preview."""
-    from core.redeemer import scan_and_redeem
+    from core.redeemer import redeem_position
 
     query = update.callback_query
     await query.answer("Executing redemptions...")
-    await _safe_edit(query, "\u23f3 <b>Executing redemptions on-chain...</b>\n\nThis may take up to 2 minutes.")
+
+    # Retrieve and immediately clear the stored preview
+    preview = context.user_data.pop("redeem_preview", None)
+
+    if not preview:
+        await _safe_edit(
+            query,
+            "\u274c <b>Nothing to redeem</b>\n\nThe preview has expired or no positions were found. "
+            "Run /redeem again to rescan.",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    await _safe_edit(
+        query,
+        f"\u23f3 <b>Executing {len(preview)} redemption(s) on-chain...</b>\n\nThis may take up to 2 minutes.",
+    )
 
     wallet = cfg.POLYMARKET_FUNDER_ADDRESS
     if not wallet:
@@ -433,24 +460,27 @@ async def _handle_redeem_confirm(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    results = await scan_and_redeem(wallet, dry_run=False)
+    results: list[dict] = []
+    for pos in preview:
+        result = await redeem_position(pos["condition_id"], pos["outcome_index"])
+        merged = {**pos, **result, "dry_run": False}
+        results.append(merged)
 
-    # Persist to DB
-    for r in results:
+        # Persist each result to DB immediately (even if failed)
         try:
             await queries.insert_redemption(
-                condition_id=r["condition_id"],
-                outcome_index=r["outcome_index"],
-                size=r["size"],
-                title=r.get("title"),
-                tx_hash=r.get("tx_hash"),
-                status="success" if r.get("success") else "failed",
-                error=r.get("error"),
-                gas_used=r.get("gas_used"),
+                condition_id=pos["condition_id"],
+                outcome_index=pos["outcome_index"],
+                size=pos["size"],
+                title=pos.get("title"),
+                tx_hash=result.get("tx_hash"),
+                status="success" if result.get("success") else "failed",
+                error=result.get("error"),
+                gas_used=result.get("gas_used"),
                 dry_run=False,
             )
         except Exception:
-            log.exception("Failed to persist redemption record for condition=%s", r.get("condition_id"))
+            log.exception("Failed to persist redemption record for condition=%s", pos.get("condition_id"))
 
     text = format_redeem_results(results)
     await _safe_edit(query, text, reply_markup=redeem_done_keyboard())
