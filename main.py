@@ -55,9 +55,19 @@ def main() -> None:
 
     # 3. Build Telegram Application with post_init hook
     async def post_init(application: Application) -> None:
-        """Called after the Application is initialised but before polling starts."""
-        await recover_unresolved()
+        """Called after the Application is initialised but before polling starts.
+
+        Order matters:
+          1. start_scheduler() first — creates and starts the AsyncIOScheduler,
+             setting the module-level SCHEDULER global.
+          2. recover_unresolved() second — reads unresolved signals from the DB
+             and schedules immediate resolution jobs onto SCHEDULER.  If called
+             before start_scheduler(), SCHEDULER is still None and every
+             recovery job is silently dropped (the `if SCHEDULER is not None`
+             guard in recover_unresolved fires False for every signal).
+        """
         start_scheduler(application, poly_client)
+        await recover_unresolved()
 
     application = (
         Application.builder()

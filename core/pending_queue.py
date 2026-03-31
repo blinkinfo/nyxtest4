@@ -17,7 +17,24 @@ log = logging.getLogger(__name__)
 
 _QUEUE_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _QUEUE_PATH = os.path.join(_QUEUE_DIR, "pending_slots.json")
-_lock = asyncio.Lock()
+
+# Lazy-initialised lock — not created until the event loop is running.
+# Creating asyncio.Lock() at module import time (before asyncio.run()) raises
+# DeprecationWarning on Python 3.10+ and a RuntimeError on Python 3.12+.
+_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    """Return the module-level asyncio.Lock, creating it on first call.
+
+    Safe to call from any coroutine — by definition an event loop is already
+    running when a coroutine executes, so asyncio.Lock() can be constructed
+    without triggering the DeprecationWarning / RuntimeError.
+    """
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
 
 
 def _load() -> list[dict[str, Any]]:
@@ -48,7 +65,7 @@ async def add_pending(
     amount_usdc: float | None,
 ) -> None:
     """Add a slot to the persistent retry queue."""
-    async with _lock:
+    async with _get_lock():
         items = _load()
         # Avoid duplicates
         if any(i["signal_id"] == signal_id for i in items):
@@ -69,7 +86,7 @@ async def add_pending(
 
 async def remove_pending(signal_id: int) -> None:
     """Remove a slot from the queue once resolved."""
-    async with _lock:
+    async with _get_lock():
         items = _load()
         items = [i for i in items if i["signal_id"] != signal_id]
         _save(items)
@@ -78,11 +95,11 @@ async def remove_pending(signal_id: int) -> None:
 
 async def list_pending() -> list[dict[str, Any]]:
     """Return all pending slots."""
-    async with _lock:
+    async with _get_lock():
         return _load()
 
 
 async def clear_all() -> None:
     """Clear the entire queue (for testing/admin use)."""
-    async with _lock:
+    async with _get_lock():
         _save([])

@@ -11,9 +11,6 @@ import config as cfg
 
 log = logging.getLogger(__name__)
 
-# Coinbase public candles endpoint (no auth required)
-_COINBASE_URL = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
-
 
 async def fetch_candles(count: int | None = None) -> list[dict[str, float]] | None:
     """Fetch recent 5-minute BTC-USD candles from Coinbase.
@@ -24,6 +21,9 @@ async def fetch_candles(count: int | None = None) -> list[dict[str, float]] | No
     Coinbase returns candles newest-first, so we reverse.
     We use explicit start/end params to guarantee Coinbase returns exactly
     cfg.ADX_CANDLE_COUNT (300) candles — the maximum the API allows.
+
+    The endpoint URL is read from cfg.COINBASE_CANDLE_URL so that a single
+    config change propagates everywhere without drift.
     """
     import time as _time
 
@@ -43,7 +43,7 @@ async def fetch_candles(count: int | None = None) -> list[dict[str, float]] | No
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(_COINBASE_URL, params=params)
+            resp = await client.get(cfg.COINBASE_CANDLE_URL, params=params)
             resp.raise_for_status()
             raw = resp.json()
     except Exception:
@@ -77,6 +77,8 @@ async def fetch_candles(count: int | None = None) -> list[dict[str, float]] | No
 
     candles.reverse()  # oldest first
     return candles
+
+
 def compute_adx(candles: list[dict[str, float]], length: int | None = None) -> list[float] | None:
     """Compute ADX series from candle data using Wilder's smoothing.
 
