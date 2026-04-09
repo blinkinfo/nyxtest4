@@ -1085,6 +1085,14 @@ async def _retrain_background(application, chat_id) -> None:
         )
         meta = model_store.load_metadata("candidate") or {}
         threshold = result.get("threshold", 0.535)
+        down_threshold = result.get("down_threshold", round(1.0 - threshold, 4))
+
+        # Persist up/down thresholds to DB
+        try:
+            await queries.set_ml_threshold(threshold)
+            await queries.set_ml_down_threshold(down_threshold)
+        except Exception as thr_exc:
+            log.warning("Retrain: failed to persist thresholds to DB: %s", thr_exc)
 
         # Persist trained candidate model to DB
         try:

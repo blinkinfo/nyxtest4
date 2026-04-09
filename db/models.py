@@ -113,6 +113,13 @@ async def init_db(db_path: str | None = None) -> None:
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
+        # Seed default ML thresholds (INSERT OR IGNORE — never overwrite live values)
+        await db.execute(
+            "INSERT OR IGNORE INTO ml_config (key, value) VALUES ('ml_threshold', '0.53')"
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO ml_config (key, value) VALUES ('ml_down_threshold', '0.47')"
+        )
         await db.commit()
 
 
